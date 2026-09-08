@@ -1,0 +1,8 @@
+node_modules/
+.env
+.env.local
+*.log
+npm-debug.log*
+service-account.json
+gcp-credentials.json
+.DS_Store
