@@ -1,0 +1,20 @@
+{
+  "name": "stqry-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Analytics 4 dashboard: visitor totals (weekly/monthly/yearly) and most-visited pages.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@google-analytics/data": "^4.7.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1"
+  }
+}

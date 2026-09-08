@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Analytics dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <div class="page">
+      <header class="page-head">
+        <div>
+          <h1>Analytics</h1>
+          <p class="page-sub" id="page-sub">Loading…</p>
+        </div>
+        <button type="button" class="ghost-button" id="theme-toggle" aria-pressed="false">
+          Dark mode
+        </button>
+      </header>
+
+      <div class="notice" id="notice" hidden></div>
+
+      <!-- Headline totals. These sit above the filter row on purpose: each tile
+           is its own fixed window, so the range control below must not scope them. -->
+      <section aria-labelledby="headline-heading">
+        <h2 class="section-heading" id="headline-heading">Total visitors</h2>
+        <div class="kpi-row" id="kpi-row"></div>
+      </section>
+
+      <!-- One filter row, scoping everything below it. -->
+      <div class="filter-row">
+        <span class="filter-label" id="range-label">Date range</span>
+        <div class="segmented" role="group" aria-labelledby="range-label" id="range-control"></div>
+        <span class="filter-window" id="range-window"></span>
+      </div>
+
+      <section class="card" aria-labelledby="trend-heading">
+        <div class="card-head">
+          <div>
+            <h2 id="trend-heading">Visitors over time</h2>
+            <p class="card-sub" id="trend-sub"></p>
+          </div>
+          <button type="button" class="ghost-button" data-table-toggle="trend" aria-pressed="false">
+            Table view
+          </button>
+        </div>
+        <div class="chart" id="trend-chart"></div>
+        <p class="footnote" id="trend-footnote"></p>
+        <div class="table-wrap" id="trend-table" hidden></div>
+      </section>
+
+      <section class="card" aria-labelledby="pages-heading">
+        <div class="card-head">
+          <div>
+            <h2 id="pages-heading">Most visited pages</h2>
+            <p class="card-sub" id="pages-sub"></p>
+          </div>
+          <button type="button" class="ghost-button" data-table-toggle="pages" aria-pressed="false">
+            Table view
+          </button>
+        </div>
+        <div class="chart" id="pages-chart"></div>
+        <div class="table-wrap" id="pages-table" hidden></div>
+      </section>
+
+      <footer class="page-foot" id="page-foot"></footer>
+    </div>
+
+    <div class="tooltip" id="tooltip" role="status" aria-live="polite" hidden></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

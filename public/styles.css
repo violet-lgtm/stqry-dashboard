@@ -1,0 +1,465 @@
+/*
+ * Colour tokens come from the validated reference palette. The chart body is
+ * written against roles (--series-1, --grid, --text-muted) rather than raw hex,
+ * so the light/dark swap happens here and nowhere else.
+ *
+ * Dark values are declared twice on purpose: the media query covers the OS
+ * setting, the [data-theme] scope covers the in-page toggle, and the toggle has
+ * to win in both directions.
+ */
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --page-plane: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --hover-wash: rgba(11, 11, 11, 0.04);
+
+  /* Categorical slot 1 — validated against the light surface. */
+  --series-1: #2a78d6;
+  /* De-emphasis grey for the comparison series (emphasis form: one hue + grey). */
+  --series-context: #898781;
+
+  --delta-good: #006300;
+  --delta-bad: #d03b3b;
+
+  --radius: 10px;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page-plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --hover-wash: rgba(255, 255, 255, 0.06);
+    --series-1: #3987e5;
+    --series-context: #898781;
+    --delta-good: #0ca30c;
+    --delta-bad: #d03b3b;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --page-plane: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --hover-wash: rgba(255, 255, 255, 0.06);
+  --series-1: #3987e5;
+  --series-context: #898781;
+  --delta-good: #0ca30c;
+  --delta-bad: #d03b3b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page-plane);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.page-sub {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+}
+
+.section-heading {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* ---------- Notice ---------- */
+
+.notice {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--series-1);
+  background: var(--surface-1);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  color: var(--text-secondary);
+}
+
+.notice strong {
+  color: var(--text-primary);
+}
+
+.notice[data-tone="error"] {
+  border-left-color: var(--delta-bad);
+}
+
+/* ---------- KPI tiles ---------- */
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.kpi {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.kpi-label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.kpi-value {
+  margin-top: 6px;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  /* Proportional figures: these are standalone numbers, not a column. */
+}
+
+.kpi-meta {
+  margin-top: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.delta {
+  font-weight: 600;
+}
+
+.delta[data-direction="up"] {
+  color: var(--delta-good);
+}
+
+.delta[data-direction="down"] {
+  color: var(--delta-bad);
+}
+
+.delta[data-direction="flat"] {
+  color: var(--text-secondary);
+}
+
+/* ---------- Filter row ---------- */
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-label {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.filter-window {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.segmented {
+  display: inline-flex;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 3px;
+}
+
+.segmented button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.segmented button:hover {
+  background: var(--hover-wash);
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--series-1);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.ghost-button {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.ghost-button:hover {
+  background: var(--hover-wash);
+}
+
+.ghost-button[aria-pressed="true"] {
+  color: var(--text-primary);
+  border-color: var(--axis);
+}
+
+:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+/* ---------- Cards ---------- */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.card-sub {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* The container grows with its content so the x-axis band is never cropped
+   into a nested scrollbar. */
+.chart {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.chart svg {
+  display: block;
+}
+
+.chart.is-stale {
+  opacity: 0.45;
+  transition: opacity 120ms ease;
+}
+
+.footnote {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.footnote:empty {
+  display: none;
+}
+
+/* ---------- Legend ---------- */
+
+.legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.legend-key {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+}
+
+.legend-key[data-shape="rect"] {
+  height: 10px;
+  width: 10px;
+  border-radius: 2px;
+}
+
+/* ---------- Tables ---------- */
+
+.table-wrap {
+  margin-top: 16px;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+td.num,
+th.num {
+  text-align: right;
+  /* Tabular figures here: these are columns that must align vertically. */
+  font-variant-numeric: tabular-nums;
+}
+
+td.path {
+  white-space: normal;
+  color: var(--text-primary);
+}
+
+/* ---------- Tooltip ---------- */
+
+.tooltip {
+  position: fixed;
+  z-index: 20;
+  pointer-events: none;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+  padding: 10px 12px;
+  min-width: 150px;
+  font-size: 13px;
+}
+
+.tooltip-title {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.tooltip-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.tooltip-key {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+  transform: translateY(-3px);
+}
+
+/* Values lead, labels follow. */
+.tooltip-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.tooltip-name {
+  color: var(--text-secondary);
+}
+
+.tooltip-note {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.page-foot {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .page {
+    padding: 24px 16px 48px;
+  }
+  .kpi-value {
+    font-size: 28px;
+  }
+}

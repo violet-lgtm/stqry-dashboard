@@ -1,0 +1,138 @@
+# stqry-dashboard
+
+A Google Analytics 4 dashboard showing total visitors (weekly, monthly, yearly)
+and the most visited pages.
+
+- **Headline totals** — visitors for the last 7 days, 30 days and 12 months,
+  each with the change against the equivalent preceding period.
+- **Visitors over time** — a trend for the selected range, drawn against the
+  comparison period, with a crosshair readout and a table view.
+- **Most visited pages** — the top pages by views, with visitors and average
+  engagement time per page.
+
+It runs on generated sample data until you give it credentials, so you can see
+the whole thing working before touching the Google Cloud console.
+
+## Quick start
+
+```bash
+npm install
+npm start          # http://localhost:3000
+```
+
+With no `.env` present this starts in sample-data mode and shows a banner
+saying so. Nothing on screen is passed off as real analytics.
+
+## Connecting your GA4 property
+
+You need two things: the property ID, and a service account allowed to read it.
+
+**1. Find the property ID.** In Google Analytics: Admin → Property details. It
+is a number like `123456789`. This is not the `G-XXXXXXX` measurement ID.
+
+**2. Create a service account.** In the [Google Cloud console](https://console.cloud.google.com):
+
+- Enable the **Google Analytics Data API** for your project
+  (APIs & Services → Library → "Google Analytics Data API" → Enable).
+- IAM & Admin → Service Accounts → Create service account. No project roles are
+  needed — the permission that matters is granted inside Analytics, not here.
+- On the new account: Keys → Add key → Create new key → JSON. Keep the download
+  safe; it is a credential.
+
+**3. Grant it access to the property.** Back in Google Analytics: Admin →
+Property access management → `+` → add the service account's `client_email`
+with the **Viewer** role. Without this step the API returns 403 no matter how
+correct the key is.
+
+**4. Configure the app.**
+
+```bash
+cp .env.example .env
+```
+
+Fill in `GA_PROPERTY_ID` and one of the three credential options, then set
+`GA_TIMEZONE` to your property's reporting timezone. Restart, and the sample
+data banner disappears.
+
+`GET /api/health` reports whether it is running on live or sample data.
+
+## Hosting it
+
+The dashboard is a Node server plus static files, so it needs a host that runs
+Node — Render, Railway, Fly.io, Google Cloud Run, or any VPS. It **cannot** go
+on static hosting like GitHub Pages, Netlify's static tier, or an S3 bucket.
+
+That split is deliberate. The service-account key is allowed to read your
+entire Analytics property, so it has to stay on the server. If the browser
+called the GA API directly, the key would be sitting in the page source for any
+visitor to lift. The frontend only ever talks to this app's own `/api/*`
+endpoints.
+
+For any of those hosts the build is:
+
+- **Build command:** `npm install`
+- **Start command:** `npm start`
+- **Environment variables:** the ones from `.env.example`. Use
+  `GA_CREDENTIALS_JSON` (the whole key file on one line) where you can only set
+  variables rather than upload files — that covers Render, Railway and Fly.
+- The app listens on `process.env.PORT`, which these hosts set for you.
+
+On Google Cloud Run there is a neater option: deploy under a service account
+that you granted GA Viewer access, set only `GA_PROPERTY_ID`, and leave the
+credential variables empty. The Google library picks up the ambient identity,
+so no key file exists to leak.
+
+**Anyone who can reach the URL can read your analytics.** There is no login. If
+you deploy it anywhere public, put access control in front of it — your host's
+password protection, an identity proxy such as Cloud Run's IAM or Cloudflare
+Access, or a reverse proxy with basic auth.
+
+## API
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/headline` | Visitor totals for all three periods, with deltas |
+| `GET /api/overview?range=weekly\|monthly\|yearly` | Summary, trend and top pages for one range |
+| `GET /api/health` | Whether live GA or sample data is in use |
+
+## How the numbers are defined
+
+- **Visitors** is GA4's `totalUsers`. Page-level figures use `screenPageViews`
+  and `userEngagementDuration`.
+- **Weekly** is the last 7 days, **monthly** the last 30, **yearly** the last 12
+  calendar months. These are rolling windows, not calendar weeks or months.
+- **Comparisons** use a window of the same length immediately before the
+  current one, except for yearly, which compares against the same window one
+  year earlier so a partial month is never measured against a complete one.
+- **The last bucket is always in progress** — today, or the current month — so
+  it reads lower than a finished one. The chart footnote says so, and the
+  tooltip marks the point.
+- **Day boundaries** come from `GA_TIMEZONE`. If it disagrees with your
+  property's reporting timezone, daily totals will be cut at the wrong hour.
+
+## Layout
+
+```
+server/
+  index.js     Express app and the JSON API
+  config.js    Environment parsing, credentials, live-vs-sample decision
+  ga.js        GA4 Data API queries
+  mock.js      Deterministic sample data
+  ranges.js    Date-window maths for the three ranges
+public/
+  index.html   Page structure
+  styles.css   Design tokens, light and dark
+  app.js       Charts (hand-drawn SVG), tables, interaction
+```
+
+## Notes
+
+- The charts are plain SVG with no charting library, so the whole frontend
+  depends on nothing beyond the browser.
+- Colours are validated for colour-vision deficiency and for contrast against
+  both the light and dark surfaces. Every chart also has a table view, and both
+  respond to keyboard focus as well as hover.
+- `npm audit` reports moderate advisories under `@google-analytics/data` →
+  `google-gax` → `uuid`. They concern `uuid` v3/v5/v6 called with a `buf`
+  argument; `google-gax` uses v4, so the affected code path is never reached.
+  Clearing them needs an upstream release.
