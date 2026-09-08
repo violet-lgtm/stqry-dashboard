@@ -116,6 +116,43 @@ The footer shows when the data was actually fetched from Google, which is not
 the same as when the page was served. Set `CACHE_TTL_MINUTES=0` to bypass the
 cache entirely while developing.
 
+## When Google returns an error
+
+Failures are contained to the panel that failed, and the dashboard recovers on
+its own.
+
+- **Each panel is an independent report.** One failing query costs the reader
+  that panel; the rest still render. A broken top-pages query leaves the trend
+  chart and the headline tiles intact, with the reason shown in the empty
+  panel's place.
+- **Only a total failure is an error response.** `/api/overview` returns 200
+  with the parts that loaded and an `errors` block naming the parts that did
+  not. It returns an error status only when nothing at all could be fetched.
+- **A missing period keeps its tile.** A headline tile that could not load
+  shows a dash and the reason rather than disappearing — a vanished tile reads
+  as "this metric is gone", not "this did not load".
+- **The reports that worked stay cached.** A retry re-queries only the failed
+  one, so a partial failure costs one query rather than three.
+- **The range selector never lies.** If switching range fails outright, the
+  selector reverts to the range whose data is actually on screen.
+- **It retries itself.** An open page retries after five minutes and clears the
+  error on its own once GA recovers; no reload needed.
+
+The message is chosen to be actionable rather than to echo the API:
+
+| GA condition | HTTP | What the reader is told |
+|---|---|---|
+| `PERMISSION_DENIED` | 403 | Add the service-account email as a Viewer on the property |
+| `UNAUTHENTICATED` | 403 | Check the credentials; enable the Data API |
+| `NOT_FOUND` | 404 | No property with that ID — and that it isn't the `G-` one |
+| `INVALID_ARGUMENT` | 400 | The query GA rejected |
+| `RESOURCE_EXHAUSTED` | 429 | The property has hit its Data API quota |
+| Malformed private key | 500 | How `GA_PRIVATE_KEY` newlines must be escaped |
+| Anything else | 502 | The underlying message |
+
+The full error and stack go to the server log. Credentials never appear in a
+response.
+
 ## Tests
 
 ```bash
@@ -140,7 +177,11 @@ assertion is counting calls that would really have spent quota:
 - A day passing with nobody opening the page makes zero queries.
 - A GA failure is retried rather than cached for the rest of the window.
 
-`test/cache.test.js` covers the cache's own contract underneath that.
+`test/cache.test.js` covers the cache's own contract underneath that, and
+`test/partial-failure.test.js` covers what survives a GA error: that one bad
+report does not blank the others, that a partial response still reports its
+freshness, that only a total failure is an error response, and that the reports
+which succeeded stay cached so a retry re-queries just the failure.
 
 ## API
 
@@ -186,9 +227,10 @@ public/
   styles.css   Design tokens, light and dark
   app.js       Charts (hand-drawn SVG), tables, interaction
 test/
-  quota.test.js  How many queries reach GA, and how often
-  cache.test.js  The cache's contract
-  helpers.js     Counting GA stand-in, and a server with a hand-driven clock
+  quota.test.js           How many queries reach GA, and how often
+  cache.test.js           The cache's contract
+  partial-failure.test.js What survives when GA returns an error
+  helpers.js              Counting GA stand-in, and a server with a hand-driven clock
 ```
 
 ## Notes

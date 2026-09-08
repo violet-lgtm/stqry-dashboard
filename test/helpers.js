@@ -10,14 +10,20 @@ const THIRTY_MINUTES = 30 * 60 * 1000;
  * cache sits above it, so anything counted here is a real upstream call that
  * would have spent quota.
  */
-export function countingSource({ failWith = null } = {}) {
+export function countingSource(initial = {}) {
   const calls = [];
-  const record = (kind, resolved) => {
-    calls.push(`${kind}:${resolved.range}`);
-    if (failWith) throw failWith;
-  };
 
-  return {
+  /**
+   * Failure can be aimed three ways, and the fields stay writable so a test can
+   * break or repair the backend mid-run:
+   *   failKinds  — only these reports fail ('totals' | 'trend' | 'pages')
+   *   failRanges — only these ranges fail ('weekly' | 'monthly' | 'yearly')
+   *   failWith   — with neither of the above set, everything fails with this
+   */
+  const source = {
+    failWith: initial.failWith ?? null,
+    failKinds: initial.failKinds ?? null,
+    failRanges: initial.failRanges ?? null,
     calls,
     get total() {
       return calls.length;
@@ -37,13 +43,29 @@ export function countingSource({ failWith = null } = {}) {
     },
     async fetchTrend(resolved) {
       record('trend', resolved);
-      return [{ bucket: '2026-09-08', visitors: 100, pageViews: 300, previousVisitors: 90, partial: true }];
+      return [
+        { bucket: '2026-09-08', visitors: 100, pageViews: 300, previousVisitors: 90, partial: true },
+      ];
     },
     async fetchTopPages(resolved) {
       record('pages', resolved);
       return [{ path: '/', title: 'Home', views: 300, visitors: 100, avgEngagementSeconds: 42 }];
     },
   };
+
+  function record(kind, resolved) {
+    calls.push(`${kind}:${resolved.range}`);
+    const byKind = source.failKinds?.includes(kind) ?? false;
+    const byRange = source.failRanges?.includes(resolved.range) ?? false;
+    const blanket = !source.failKinds && !source.failRanges && Boolean(source.failWith);
+    if (byKind || byRange || blanket) {
+      throw (
+        source.failWith || Object.assign(new Error(`${kind}:${resolved.range} failed`), { code: 14 })
+      );
+    }
+  }
+
+  return source;
 }
 
 /**

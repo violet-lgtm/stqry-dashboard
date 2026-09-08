@@ -113,48 +113,88 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
   });
 
   /**
-   * Turn the API's failures into something a person can act on.
+   * Classify an upstream failure into an HTTP status and a message someone can
+   * act on.
    *
    * The raw errors are gRPC status codes and OpenSSL strings — "2 UNKNOWN:
    * ... DECODER routines::unsupported" is what a malformed private key looks
    * like, which tells the reader nothing about what to fix.
    */
-  function fail(res, error) {
-    console.error('[ga]', error);
-
+  function describeError(error) {
     const raw = error?.message || '';
 
     if (/DECODER routines|error:1E08010C|asn1 encoding/i.test(raw)) {
-      return res.status(500).json({
-        error:
+      return {
+        status: 500,
+        message:
           'The service-account private key could not be read. If GA_PRIVATE_KEY is on a single line, its newlines must be written as \\n, and the value must include the BEGIN/END PRIVATE KEY lines.',
-      });
+      };
     }
 
     switch (error?.code) {
       case 7: // PERMISSION_DENIED
-        return res.status(403).json({
-          error:
+        return {
+          status: 403,
+          message:
             'Google Analytics denied access to this property. Add the service-account email as a Viewer on the GA4 property under Admin → Property access management.',
-        });
+        };
       case 16: // UNAUTHENTICATED
-        return res.status(403).json({
-          error:
+        return {
+          status: 403,
+          message:
             'Google Analytics rejected the credentials. Check GA_CLIENT_EMAIL and GA_PRIVATE_KEY, and that the Google Analytics Data API is enabled for the project.',
-        });
+        };
       case 5: // NOT_FOUND
-        return res.status(404).json({
-          error: `No GA4 property with ID ${config.propertyId}. Use the numeric property ID from Admin → Property details, not the "G-" measurement ID.`,
-        });
+        return {
+          status: 404,
+          message: `No GA4 property with ID ${config.propertyId}. Use the numeric property ID from Admin → Property details, not the "G-" measurement ID.`,
+        };
       case 3: // INVALID_ARGUMENT
-        return res.status(400).json({ error: `Google Analytics rejected the query: ${raw}` });
+        return { status: 400, message: `Google Analytics rejected the query: ${raw}` };
       case 8: // RESOURCE_EXHAUSTED
-        return res.status(429).json({
-          error: 'This GA4 property has hit its Data API quota. Try again shortly.',
-        });
+        return {
+          status: 429,
+          message: 'This GA4 property has hit its Data API quota. Try again shortly.',
+        };
       default:
-        return res.status(502).json({ error: raw || 'The Google Analytics API request failed.' });
+        return { status: 502, message: raw || 'The Google Analytics API request failed.' };
     }
+  }
+
+  function fail(res, error) {
+    console.error('[ga]', error);
+    const { status, message } = describeError(error);
+    res.status(status).json({ error: message });
+  }
+
+  /**
+   * Run named parts and report each one's fate separately.
+   *
+   * The panels of this dashboard are independent reports, so one failing query
+   * should cost the reader that panel — not the whole page. Promise.all would
+   * throw away two good results to report one bad one.
+   */
+  async function settleParts(entries) {
+    const settled = await Promise.all(
+      entries.map(async ([name, promise]) => {
+        try {
+          return [name, { ok: true, entry: await promise }];
+        } catch (error) {
+          console.error(`[ga] ${name}:`, error);
+          return [name, { ok: false, error }];
+        }
+      }),
+    );
+    return Object.fromEntries(settled);
+  }
+
+  /** The `errors` block a partial response carries, or null when all is well. */
+  function errorsFor(parts) {
+    const failed = Object.entries(parts).filter(([, part]) => !part.ok);
+    if (failed.length === 0) return null;
+    return Object.fromEntries(
+      failed.map(([name, part]) => [name, { message: describeError(part.error).message }]),
+    );
   }
 
   /**
@@ -174,28 +214,35 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
 
   app.get('/api/overview', async (req, res) => {
     const resolved = resolveRange(parseRange(req.query.range), config.timeZone);
-    try {
-      const [totals, trend, topPages] = await Promise.all([
-        cachedTotals(resolved),
-        cachedTrend(resolved),
-        cachedTopPages(resolved),
-      ]);
 
-      res.json({
-        meta: {
-          ...describe(resolved),
-          timeZone: config.timeZone,
-          usingMockData: config.useMockData,
-          ...(config.useMockData ? { mockReason: config.mockReason } : {}),
-          ...freshness([totals, trend, topPages]),
-        },
-        summary: summarise(totals.value),
-        trend: trend.value,
-        topPages: topPages.value,
-      });
-    } catch (error) {
-      fail(res, error);
+    const parts = await settleParts([
+      ['summary', cachedTotals(resolved)],
+      ['trend', cachedTrend(resolved)],
+      ['topPages', cachedTopPages(resolved)],
+    ]);
+
+    const loaded = Object.values(parts).filter((part) => part.ok);
+
+    // Only when there is nothing at all to show does this become an error
+    // response; a partial one is still a useful page.
+    if (loaded.length === 0) {
+      return fail(res, Object.values(parts).find((part) => !part.ok).error);
     }
+
+    const errors = errorsFor(parts);
+    res.json({
+      meta: {
+        ...describe(resolved),
+        timeZone: config.timeZone,
+        usingMockData: config.useMockData,
+        ...(config.useMockData ? { mockReason: config.mockReason } : {}),
+        ...freshness(loaded.map((part) => part.entry)),
+      },
+      summary: parts.summary.ok ? summarise(parts.summary.entry.value) : null,
+      trend: parts.trend.ok ? parts.trend.entry.value : null,
+      topPages: parts.topPages.ok ? parts.topPages.entry.value : null,
+      ...(errors ? { errors } : {}),
+    });
   });
 
   /**
@@ -203,32 +250,37 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
    * range resolutions rather than the one the charts are scoped to.
    */
   app.get('/api/headline', async (_req, res) => {
-    try {
-      const parts = await Promise.all(
-        RANGES.map(async (range) => {
-          const resolved = resolveRange(range, config.timeZone);
-          const totals = await cachedTotals(resolved);
-          return { range, resolved, totals };
-        }),
-      );
+    const windows = Object.fromEntries(
+      RANGES.map((range) => [range, resolveRange(range, config.timeZone)]),
+    );
 
-      res.json({
-        meta: {
-          timeZone: config.timeZone,
-          usingMockData: config.useMockData,
-          ...(config.useMockData ? { mockReason: config.mockReason } : {}),
-          ...freshness(parts.map((part) => part.totals)),
-        },
-        headline: Object.fromEntries(
-          parts.map(({ range, resolved, totals }) => [
-            range,
-            { ...summarise(totals.value), window: describe(resolved) },
-          ]),
-        ),
-      });
-    } catch (error) {
-      fail(res, error);
+    const parts = await settleParts(
+      RANGES.map((range) => [range, cachedTotals(windows[range])]),
+    );
+
+    const loaded = Object.values(parts).filter((part) => part.ok);
+    if (loaded.length === 0) {
+      return fail(res, Object.values(parts).find((part) => !part.ok).error);
     }
+
+    const errors = errorsFor(parts);
+    res.json({
+      meta: {
+        timeZone: config.timeZone,
+        usingMockData: config.useMockData,
+        ...(config.useMockData ? { mockReason: config.mockReason } : {}),
+        ...freshness(loaded.map((part) => part.entry)),
+      },
+      headline: Object.fromEntries(
+        RANGES.map((range) => [
+          range,
+          parts[range].ok
+            ? { ...summarise(parts[range].entry.value), window: describe(windows[range]) }
+            : null,
+        ]),
+      ),
+      ...(errors ? { errors } : {}),
+    });
   });
 
   app.get('/api/health', (_req, res) => {

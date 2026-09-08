@@ -133,7 +133,7 @@ describe('GA request rate', () => {
     // than serve the error for the next half hour.
     source.failWith = null;
     const retried = await server.get('/api/overview?range=weekly');
-    assert.equal(retried.status, 502, 'the counting source is still configured to fail');
+    assert.equal(retried.status, 200, 'the retry succeeds as soon as GA recovers');
     assert.ok(source.total > afterFailure, 'a failed report must be retried, not cached');
   });
 

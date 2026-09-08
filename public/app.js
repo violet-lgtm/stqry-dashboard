@@ -250,13 +250,42 @@ function hideTooltip() {
  * KPI tiles
  * ------------------------------------------------------------------ */
 
-function renderKpis(headline) {
+/**
+ * A tile whose period could not be loaded. It keeps its place in the row — a
+ * disappearing tile reads as "this metric no longer exists" rather than "this
+ * did not load" — and gives the reason in muted text rather than a status
+ * colour, since a missing number is not a bad number.
+ */
+function unavailableTile({ label }, reason) {
+  const card = document.createElement('div');
+  card.className = 'kpi kpi-unavailable';
+
+  const heading = document.createElement('div');
+  heading.className = 'kpi-label';
+  heading.textContent = label;
+
+  const value = document.createElement('div');
+  value.className = 'kpi-value';
+  value.textContent = '—';
+
+  const note = document.createElement('div');
+  note.className = 'kpi-meta';
+  note.textContent = reason || 'Could not be loaded.';
+
+  card.append(heading, value, note);
+  return card;
+}
+
+function renderKpis(headline, { errors = {}, fallbackMessage = null } = {}) {
   const row = document.getElementById('kpi-row');
   row.replaceChildren();
 
   for (const tile of KPI_TILES) {
-    const data = headline[tile.range];
-    if (!data) continue;
+    const data = headline?.[tile.range] ?? null;
+    if (!data) {
+      row.append(unavailableTile(tile, errors[tile.range]?.message || fallbackMessage));
+      continue;
+    }
 
     const card = document.createElement('div');
     card.className = 'kpi';
@@ -683,6 +712,42 @@ function renderPages() {
   container.append(svg);
 }
 
+/**
+ * Replace a chart with the reason it is missing. The other panels are separate
+ * reports and keep rendering — one failed query costs the reader that panel,
+ * not the page.
+ */
+function renderCardError(containerId, message) {
+  const container = document.getElementById(containerId);
+  container.replaceChildren();
+  const box = document.createElement('p');
+  box.className = 'card-error';
+  box.textContent = message || 'This panel could not be loaded.';
+  container.append(box);
+}
+
+/**
+ * Draw whatever arrived. Called after every load, and again on a theme change
+ * or a resize, so the null-handling lives in exactly one place.
+ */
+function renderPanels() {
+  const data = state.overview;
+  if (!data) return;
+  const errors = data.errors || {};
+
+  if (data.trend) renderTrend();
+  else renderCardError('trend-chart', errors.trend?.message);
+
+  if (data.topPages) renderPages();
+  else renderCardError('pages-chart', errors.topPages?.message);
+
+  document.getElementById('trend-footnote').textContent = data.trend?.some((d) => d.partial)
+    ? `The final ${data.meta.granularity} is still in progress, so it reads lower than a complete one.`
+    : '';
+
+  renderTables();
+}
+
 /* ------------------------------------------------------------------ *
  * Table views — every value in a chart is reachable without hovering
  * ------------------------------------------------------------------ */
@@ -716,42 +781,55 @@ function buildTable(columns, rows) {
   return table;
 }
 
+function unavailableNote(message) {
+  const note = document.createElement('p');
+  note.className = 'card-error';
+  note.textContent = message || 'No data to show.';
+  return note;
+}
+
 function renderTables() {
-  const { trend, topPages, meta } = state.overview;
+  const { trend, topPages, meta, errors = {} } = state.overview;
 
-  const trendTable = buildTable(
-    [
-      { label: meta.granularity === 'month' ? 'Month' : 'Day' },
-      { label: 'Visitors', numeric: true },
-      { label: COMPARISON_LABELS[meta.range], numeric: true },
-      { label: 'Page views', numeric: true },
-    ],
-    trend.map((d) => [
-      formatBucketLong(d.bucket) + (d.partial ? ' (in progress)' : ''),
-      formatFull(d.visitors),
-      d.previousVisitors === null ? '—' : formatFull(d.previousVisitors),
-      formatFull(d.pageViews),
-    ]),
+  document.getElementById('trend-table').replaceChildren(
+    trend
+      ? buildTable(
+          [
+            { label: meta.granularity === 'month' ? 'Month' : 'Day' },
+            { label: 'Visitors', numeric: true },
+            { label: COMPARISON_LABELS[meta.range], numeric: true },
+            { label: 'Page views', numeric: true },
+          ],
+          trend.map((d) => [
+            formatBucketLong(d.bucket) + (d.partial ? ' (in progress)' : ''),
+            formatFull(d.visitors),
+            d.previousVisitors === null ? '—' : formatFull(d.previousVisitors),
+            formatFull(d.pageViews),
+          ]),
+        )
+      : unavailableNote(errors.trend?.message),
   );
-  document.getElementById('trend-table').replaceChildren(trendTable);
 
-  const pagesTable = buildTable(
-    [
-      { label: 'Page' },
-      { label: 'Title' },
-      { label: 'Page views', numeric: true },
-      { label: 'Visitors', numeric: true },
-      { label: 'Avg. engagement', numeric: true },
-    ],
-    topPages.map((p) => [
-      p.path,
-      p.title || '—',
-      formatFull(p.views),
-      formatFull(p.visitors),
-      formatDuration(p.avgEngagementSeconds),
-    ]),
+  document.getElementById('pages-table').replaceChildren(
+    topPages
+      ? buildTable(
+          [
+            { label: 'Page' },
+            { label: 'Title' },
+            { label: 'Page views', numeric: true },
+            { label: 'Visitors', numeric: true },
+            { label: 'Avg. engagement', numeric: true },
+          ],
+          topPages.map((p) => [
+            p.path,
+            p.title || '—',
+            formatFull(p.views),
+            formatFull(p.visitors),
+            formatDuration(p.avgEngagementSeconds),
+          ]),
+        )
+      : unavailableNote(errors.topPages?.message),
   );
-  document.getElementById('pages-table').replaceChildren(pagesTable);
 }
 
 /* ------------------------------------------------------------------ *
@@ -768,9 +846,12 @@ function renderRangeControl() {
     button.setAttribute('aria-pressed', String(range === state.range));
     button.addEventListener('click', () => {
       if (state.range === range) return;
+      const previousRange = state.range;
       state.range = range;
       renderRangeControl();
-      loadOverview();
+      // If the new range can't be loaded at all, the control must not keep
+      // claiming it — the charts below still show the old range's data.
+      loadOverview({ revertTo: previousRange });
     });
     control.append(button);
   }
@@ -840,7 +921,7 @@ function scheduleRefresh(meta, { fallbackMs = FALLBACK_REFRESH_MS } = {}) {
 
 function refreshAll() {
   refreshOverdue = false;
-  loadHeadline().catch(() => {});
+  loadHeadline();
   loadOverview({ silent: true });
 }
 
@@ -849,15 +930,21 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /**
- * Note this deliberately leaves the notice alone: `loadOverview` owns it, so a
- * headline load can't wipe an error the overview just reported.
+ * Failures are reported in the tiles themselves rather than the page banner:
+ * `loadOverview` owns the banner, and a headline problem is specific to these
+ * three numbers. It never throws, so a background refresh can't swallow the
+ * failure silently by catching it and moving on.
  */
 async function loadHeadline() {
-  const data = await fetchJson('/api/headline');
-  renderKpis(data.headline);
+  try {
+    const data = await fetchJson('/api/headline');
+    renderKpis(data.headline, { errors: data.errors || {} });
+  } catch (error) {
+    renderKpis(null, { fallbackMessage: error.message });
+  }
 }
 
-async function loadOverview({ silent = false } = {}) {
+async function loadOverview({ silent = false, revertTo = null } = {}) {
   const seq = (state.requestSeq += 1);
   // A background refresh must not flicker the charts; only a load the reader
   // asked for holds the frame at reduced opacity.
@@ -876,11 +963,9 @@ async function loadOverview({ silent = false } = {}) {
       `Visitors per ${data.meta.granularity}, against ${COMPARISON_LABELS[data.meta.range].toLowerCase()}`;
     document.getElementById('pages-sub').textContent =
       `By page views · ${formatDayRange(data.meta.current)}`;
-    document.getElementById('trend-footnote').textContent = data.trend.some((d) => d.partial)
-      ? `The final ${data.meta.granularity} is still in progress, so it reads lower than a complete one.`
-      : '';
-    document.getElementById('page-sub').textContent =
-      `${formatFull(data.summary.visitors)} visitors · ${RANGE_LABELS[data.meta.range].toLowerCase()}`;
+    document.getElementById('page-sub').textContent = data.summary
+      ? `${formatFull(data.summary.visitors)} visitors · ${RANGE_LABELS[data.meta.range].toLowerCase()}`
+      : RANGE_LABELS[data.meta.range];
     // `generatedAt` is when the data was fetched from Google, not when this
     // response was served — with a cache in front, those differ.
     const updatedAt = new Date(data.meta.generatedAt).toLocaleTimeString('en-GB', {
@@ -888,21 +973,27 @@ async function loadOverview({ silent = false } = {}) {
       minute: '2-digit',
     });
     const source = data.meta.usingMockData ? 'Sample data' : 'Google Analytics 4';
-    const cadence = data.meta.cacheTtlMinutes
-      ? ` · refreshes every ${data.meta.cacheTtlMinutes} min while open`
-      : '';
+    // Only worth stating in whole minutes; a sub-minute TTL (used in tests)
+    // would otherwise print as "every 0.016666666666666666 min".
+    const ttlMinutes = data.meta.cacheTtlMinutes;
+    const cadence =
+      ttlMinutes >= 1 ? ` · refreshes every ${Math.round(ttlMinutes)} min while open` : '';
     document.getElementById('page-foot').textContent =
       `${source} · times in ${data.meta.timeZone} · updated ${updatedAt}${cadence}`;
 
-    renderTrend();
-    renderPages();
-    renderTables();
+    renderPanels();
     // The SVG the tooltip was describing has just been replaced.
     hideTooltip();
 
     scheduleRefresh(data.meta);
   } catch (error) {
     if (seq !== state.requestSeq) return;
+    // Nothing loaded, so the data on screen is still the previous range's.
+    // Put the selector back to match it rather than leave the two disagreeing.
+    if (revertTo) {
+      state.range = revertTo;
+      renderRangeControl();
+    }
     showNotice(error.message, 'error');
     // Keep trying: a transient upstream failure shouldn't leave an open
     // dashboard frozen until someone reloads it by hand.
@@ -944,10 +1035,7 @@ function setupTheme() {
     localStorage.setItem('dashboard-theme', next);
     sync();
     // The charts bake surface-coloured rings into their marks, so redraw them.
-    if (state.overview) {
-      renderTrend();
-      renderPages();
-    }
+    renderPanels();
   });
 
   sync();
@@ -958,8 +1046,7 @@ function setupResize() {
   window.addEventListener('resize', () => {
     if (Math.abs(window.innerWidth - lastWidth) < 2 || !state.overview) return;
     lastWidth = window.innerWidth;
-    renderTrend();
-    renderPages();
+    renderPanels();
   });
 }
 
@@ -967,5 +1054,5 @@ renderRangeControl();
 setupTableToggles();
 setupTheme();
 setupResize();
-loadHeadline().catch((error) => showNotice(error.message, 'error'));
+loadHeadline();
 loadOverview();
