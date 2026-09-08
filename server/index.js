@@ -3,8 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { config } from './config.js';
+import { createCache } from './cache.js';
 import { RANGES, formatDate, resolveRange } from './ranges.js';
 import * as mock from './mock.js';
+
+const cache = createCache({ ttlMs: config.cacheTtlMs });
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -24,6 +27,54 @@ async function backend() {
 function parseRange(value) {
   const range = String(value || 'monthly').toLowerCase();
   return RANGES.includes(range) ? range : 'monthly';
+}
+
+/**
+ * Cache keys carry the resolved window, not just the range name.
+ *
+ * "weekly" means a different seven days after midnight, so keying on the name
+ * alone would serve yesterday's numbers under today's date labels until the
+ * TTL happened to lapse. Including the dates makes the rollover produce a new
+ * key, and the old one is pruned on the next write.
+ */
+function windowKey(kind, resolved) {
+  return `${kind}:${resolved.range}:${formatDate(resolved.current.start)}:${formatDate(resolved.current.end)}`;
+}
+
+/**
+ * The three cached slices. Keying each separately rather than caching whole
+ * responses lets /api/headline and /api/overview share the totals they have in
+ * common, so a first page load costs five GA queries instead of six.
+ */
+async function cachedTotals(resolved) {
+  const source = await backend();
+  return cache.read(windowKey('totals', resolved), () => source.fetchTotals(resolved));
+}
+
+async function cachedTrend(resolved) {
+  const source = await backend();
+  return cache.read(windowKey('trend', resolved), () => source.fetchTrend(resolved));
+}
+
+async function cachedTopPages(resolved) {
+  const source = await backend();
+  return cache.read(`${windowKey('pages', resolved)}:${config.topPagesLimit}`, () =>
+    source.fetchTopPages(resolved, config.topPagesLimit),
+  );
+}
+
+/**
+ * Freshness for a response built from several cached slices: it is only as
+ * current as its oldest part, and needs revisiting when its first part expires.
+ */
+function freshness(parts) {
+  const cachedAt = Math.min(...parts.map((part) => part.cachedAt));
+  const expiresAt = Math.min(...parts.map((part) => part.expiresAt));
+  return {
+    generatedAt: new Date(cachedAt).toISOString(),
+    nextRefreshAt: config.cacheTtlMs > 0 ? new Date(expiresAt).toISOString() : null,
+    cacheTtlMinutes: config.cacheTtlMinutes,
+  };
 }
 
 function percentChange(current, previous) {
@@ -100,14 +151,23 @@ function fail(res, error) {
  * panels always have to agree with each other, so they are fetched together
  * rather than racing as separate requests.
  */
+/**
+ * The server-side cache is the only cache. Letting browsers or proxies keep
+ * their own copies would mean viewers ageing out at different times and no way
+ * to tell how old a number on screen actually is.
+ */
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 app.get('/api/overview', async (req, res) => {
   const resolved = resolveRange(parseRange(req.query.range), config.timeZone);
   try {
-    const source = await backend();
     const [totals, trend, topPages] = await Promise.all([
-      source.fetchTotals(resolved),
-      source.fetchTrend(resolved),
-      source.fetchTopPages(resolved, config.topPagesLimit),
+      cachedTotals(resolved),
+      cachedTrend(resolved),
+      cachedTopPages(resolved),
     ]);
 
     res.json({
@@ -116,11 +176,11 @@ app.get('/api/overview', async (req, res) => {
         timeZone: config.timeZone,
         usingMockData: config.useMockData,
         ...(config.useMockData ? { mockReason: config.mockReason } : {}),
-        generatedAt: new Date().toISOString(),
+        ...freshness([totals, trend, topPages]),
       },
-      summary: summarise(totals),
-      trend,
-      topPages,
+      summary: summarise(totals.value),
+      trend: trend.value,
+      topPages: topPages.value,
     });
   } catch (error) {
     fail(res, error);
@@ -133,12 +193,11 @@ app.get('/api/overview', async (req, res) => {
  */
 app.get('/api/headline', async (_req, res) => {
   try {
-    const source = await backend();
-    const entries = await Promise.all(
+    const parts = await Promise.all(
       RANGES.map(async (range) => {
         const resolved = resolveRange(range, config.timeZone);
-        const totals = await source.fetchTotals(resolved);
-        return [range, { ...summarise(totals), window: describe(resolved) }];
+        const totals = await cachedTotals(resolved);
+        return { range, resolved, totals };
       }),
     );
 
@@ -147,8 +206,14 @@ app.get('/api/headline', async (_req, res) => {
         timeZone: config.timeZone,
         usingMockData: config.useMockData,
         ...(config.useMockData ? { mockReason: config.mockReason } : {}),
+        ...freshness(parts.map((part) => part.totals)),
       },
-      headline: Object.fromEntries(entries),
+      headline: Object.fromEntries(
+        parts.map(({ range, resolved, totals }) => [
+          range,
+          { ...summarise(totals.value), window: describe(resolved) },
+        ]),
+      ),
     });
   } catch (error) {
     fail(res, error);
@@ -161,6 +226,7 @@ app.get('/api/health', (_req, res) => {
     usingMockData: config.useMockData,
     propertyId: config.propertyId || null,
     timeZone: config.timeZone,
+    cache: cache.stats(),
   });
 });
 
@@ -170,4 +236,9 @@ app.listen(config.port, () => {
   console.log(`stqry-dashboard listening on http://localhost:${config.port}`);
   if (config.useMockData) console.log(`[mock] ${config.mockReason}`);
   else console.log(`[ga] querying GA4 property ${config.propertyId} (${config.timeZone})`);
+  console.log(
+    config.cacheTtlMs > 0
+      ? `[cache] results held for ${config.cacheTtlMinutes} minutes, refreshed only on request`
+      : '[cache] disabled (CACHE_TTL_MINUTES=0): every request queries upstream',
+  );
 });

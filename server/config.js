@@ -48,8 +48,27 @@ const hasAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
 const forceMock = /^(1|true|yes)$/i.test(process.env.GA_USE_MOCK || '');
 const canQueryGa = Boolean(propertyId) && (Boolean(credentials) || hasAdc);
 
+/**
+ * Cached results are held this long. 0 disables caching entirely, which is
+ * handy while developing against the mock backend.
+ */
+function readCacheTtlMinutes() {
+  const raw = process.env.CACHE_TTL_MINUTES;
+  if (raw === undefined || raw === '') return 30;
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    console.warn(`[config] CACHE_TTL_MINUTES="${raw}" is not a non-negative number; falling back to 30.`);
+    return 30;
+  }
+  return minutes;
+}
+
+const cacheTtlMinutes = readCacheTtlMinutes();
+
 export const config = {
   port: Number(process.env.PORT) || 3000,
+  cacheTtlMinutes,
+  cacheTtlMs: cacheTtlMinutes * 60 * 1000,
   propertyId,
   credentials,
   timeZone: process.env.GA_TIMEZONE || 'UTC',

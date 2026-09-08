@@ -33,8 +33,16 @@ const KPI_TILES = [
 const state = {
   range: 'monthly',
   overview: null,
-  loading: false,
+  /** Guards against an earlier response landing after a later one. */
+  requestSeq: 0,
 };
+
+/* Auto-refresh pacing. The server decides when its cache goes stale and tells
+ * us in `meta.nextRefreshAt`; these are only the guard rails around that. */
+const MIN_REFRESH_MS = 60 * 1000;
+const FALLBACK_REFRESH_MS = 30 * 60 * 1000;
+const RETRY_REFRESH_MS = 5 * 60 * 1000;
+const REFRESH_JITTER_MS = 30 * 1000;
 
 /* ------------------------------------------------------------------ *
  * Formatting
@@ -797,18 +805,71 @@ async function fetchJson(url) {
   return body;
 }
 
+/* ------------------------------------------------------------------ *
+ * Refresh scheduling
+ *
+ * The page pulls again when the server's cached copy expires — but only while
+ * somebody is actually looking at it. A hidden tab arms nothing and spends no
+ * requests; it catches up the moment it is brought back to the front.
+ * ------------------------------------------------------------------ */
+
+let refreshTimer = null;
+let refreshOverdue = false;
+
+function scheduleRefresh(meta, { fallbackMs = FALLBACK_REFRESH_MS } = {}) {
+  window.clearTimeout(refreshTimer);
+
+  const target = meta?.nextRefreshAt
+    ? new Date(meta.nextRefreshAt).getTime()
+    : Date.now() + fallbackMs;
+
+  // Jitter so a wall of open tabs doesn't wake in lockstep and stampede the
+  // server the instant its cache lapses.
+  const delay = Math.max(MIN_REFRESH_MS, target - Date.now()) + Math.random() * REFRESH_JITTER_MS;
+
+  refreshTimer = window.setTimeout(() => {
+    if (document.visibilityState === 'visible') {
+      refreshAll();
+      return;
+    }
+    // Nobody is looking. Don't spend a request on a hidden tab; leave a flag
+    // for the visibilitychange handler instead of re-arming a timer.
+    refreshOverdue = true;
+  }, delay);
+}
+
+function refreshAll() {
+  refreshOverdue = false;
+  loadHeadline().catch(() => {});
+  loadOverview({ silent: true });
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && refreshOverdue) refreshAll();
+});
+
+/**
+ * Note this deliberately leaves the notice alone: `loadOverview` owns it, so a
+ * headline load can't wipe an error the overview just reported.
+ */
 async function loadHeadline() {
   const data = await fetchJson('/api/headline');
   renderKpis(data.headline);
-  if (data.meta.usingMockData) showNotice(data.meta.mockReason, 'info');
 }
 
-async function loadOverview() {
-  state.loading = true;
-  setStale(true);
+async function loadOverview({ silent = false } = {}) {
+  const seq = (state.requestSeq += 1);
+  // A background refresh must not flicker the charts; only a load the reader
+  // asked for holds the frame at reduced opacity.
+  if (!silent) setStale(true);
   try {
     const data = await fetchJson(`/api/overview?range=${encodeURIComponent(state.range)}`);
+    // A range clicked mid-flight supersedes this response.
+    if (seq !== state.requestSeq) return;
     state.overview = data;
+    // Either the sample-data banner, or nothing — this also clears an error
+    // notice left by a previous attempt that has now recovered.
+    showNotice(data.meta.usingMockData ? data.meta.mockReason : null, 'info');
 
     document.getElementById('range-window').textContent = formatDayRange(data.meta.current);
     document.getElementById('trend-sub').textContent =
@@ -820,18 +881,34 @@ async function loadOverview() {
       : '';
     document.getElementById('page-sub').textContent =
       `${formatFull(data.summary.visitors)} visitors · ${RANGE_LABELS[data.meta.range].toLowerCase()}`;
-    document.getElementById('page-foot').textContent = data.meta.usingMockData
-      ? `Sample data · times in ${data.meta.timeZone}`
-      : `Google Analytics 4 · times in ${data.meta.timeZone} · updated ${new Date(data.meta.generatedAt).toLocaleTimeString('en-GB')}`;
+    // `generatedAt` is when the data was fetched from Google, not when this
+    // response was served — with a cache in front, those differ.
+    const updatedAt = new Date(data.meta.generatedAt).toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const source = data.meta.usingMockData ? 'Sample data' : 'Google Analytics 4';
+    const cadence = data.meta.cacheTtlMinutes
+      ? ` · refreshes every ${data.meta.cacheTtlMinutes} min while open`
+      : '';
+    document.getElementById('page-foot').textContent =
+      `${source} · times in ${data.meta.timeZone} · updated ${updatedAt}${cadence}`;
 
     renderTrend();
     renderPages();
     renderTables();
+    // The SVG the tooltip was describing has just been replaced.
+    hideTooltip();
+
+    scheduleRefresh(data.meta);
   } catch (error) {
+    if (seq !== state.requestSeq) return;
     showNotice(error.message, 'error');
+    // Keep trying: a transient upstream failure shouldn't leave an open
+    // dashboard frozen until someone reloads it by hand.
+    scheduleRefresh(null, { fallbackMs: RETRY_REFRESH_MS });
   } finally {
-    state.loading = false;
-    setStale(false);
+    if (seq === state.requestSeq) setStale(false);
   }
 }
 

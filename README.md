@@ -87,13 +87,43 @@ you deploy it anywhere public, put access control in front of it — your host's
 password protection, an identity proxy such as Cloud Run's IAM or Cloudflare
 Access, or a reverse proxy with basic auth.
 
+## Refreshing and caching
+
+Results are cached on the server for 30 minutes (`CACHE_TTL_MINUTES`), and an
+open page pulls again once its copy expires.
+
+Both halves are demand-driven — nothing runs on a timer with no audience:
+
+- **The cache fills only on request.** There is no background job keeping data
+  warm. A dashboard nobody has open makes zero API calls.
+- **A hidden tab asks for nothing.** When the refresh falls due in a
+  backgrounded tab it is skipped, not queued; the page catches up the moment
+  someone brings it back to the front.
+- **Simultaneous viewers cost one query.** Concurrent requests for the same
+  stale data share a single in-flight GA call rather than each firing their own.
+- **Failures are not cached.** A GA error is never held for the rest of the
+  TTL — the next request retries, and an open page retries on its own after
+  five minutes.
+
+The practical effect on quota: a first visit costs five GA queries, and every
+visit for the next half hour costs none, however many people load the page.
+
+The footer shows when the data was actually fetched from Google, which is not
+the same as when the page was served. Set `CACHE_TTL_MINUTES=0` to bypass the
+cache entirely while developing.
+
 ## API
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/headline` | Visitor totals for all three periods, with deltas |
 | `GET /api/overview?range=weekly\|monthly\|yearly` | Summary, trend and top pages for one range |
-| `GET /api/health` | Whether live GA or sample data is in use |
+| `GET /api/health` | Whether live GA or sample data is in use, plus cache stats |
+
+Responses carry `meta.generatedAt` (when the data was fetched from GA) and
+`meta.nextRefreshAt` (when its cached copy goes stale, or `null` if caching is
+off). They are sent `Cache-Control: no-store`, so the server-side cache is the
+only cache — browsers and proxies never keep their own uncoordinated copies.
 
 ## How the numbers are defined
 
@@ -115,6 +145,7 @@ Access, or a reverse proxy with basic auth.
 ```
 server/
   index.js     Express app and the JSON API
+  cache.js     Demand-driven TTL cache with in-flight de-duplication
   config.js    Environment parsing, credentials, live-vs-sample decision
   ga.js        GA4 Data API queries
   mock.js      Deterministic sample data
