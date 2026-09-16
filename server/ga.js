@@ -123,27 +123,103 @@ function normaliseKey(key, granularity) {
   return `${key.slice(0, 4)}-${key.slice(4, 6)}-${key.slice(6, 8)}`;
 }
 
+/**
+ * The dimensions that can identify a "page", best first.
+ *
+ * `pagePath` is the right answer for a web property, but it does not exist for
+ * app/screen data or for events that arrive without `page_location` — GA
+ * returns the literal string "(not set)" for every row. The unified dimensions
+ * are what GA's own "Pages and screens" report falls back on, and they cover
+ * web and app alike.
+ */
+const PAGE_DIMENSIONS = [
+  { name: 'pagePath', title: 'pageTitle' },
+  { name: 'unifiedScreenName', title: null }, // "Page title and screen name"
+  { name: 'unifiedScreenClass', title: null }, // "Page title and screen class"
+];
+
+/**
+ * Did this dimension actually identify anything?
+ *
+ * Rows of "(not set)" are GA saying "I have views, but not under this
+ * dimension" — worth retrying with another, unlike a genuinely empty result
+ * which means there was simply no traffic.
+ */
+export function namesAnything(rows) {
+  if (!rows || rows.length === 0) return false;
+  return rows.some((row) => {
+    const value = row.dimensionValues?.[0]?.value;
+    return Boolean(value) && value !== '(not set)';
+  });
+}
+
+/**
+ * Walk the candidate dimensions until one names something, and report which
+ * one was used.
+ *
+ * Takes `runReport` rather than reaching for the client itself, so the retry
+ * behaviour can be tested without a Google account.
+ */
+export async function queryTopPages(runReport, { dateRange, limit, pinned = null }) {
+  const candidates = pinned ? [{ name: pinned, title: null }] : PAGE_DIMENSIONS;
+
+  let rows = [];
+  let used = candidates[0];
+
+  for (const candidate of candidates) {
+    let response;
+    try {
+      [response] = await runReport({
+        dateRanges: [dateRange],
+        dimensions: [
+          { name: candidate.name },
+          ...(candidate.title ? [{ name: candidate.title }] : []),
+        ],
+        metrics: [
+          { name: 'screenPageViews' },
+          { name: 'totalUsers' },
+          { name: 'userEngagementDuration' },
+        ],
+        orderBys: [{ metric: { metricName: 'screenPageViews' }, desc: true }],
+        limit,
+      });
+    } catch (error) {
+      // A property that doesn't support a dimension answers INVALID_ARGUMENT.
+      // That's a reason to try the next candidate, not to fail the panel — but
+      // if every candidate is exhausted the error is real and must surface.
+      if (error?.code === 3 && candidate !== candidates[candidates.length - 1]) continue;
+      throw error;
+    }
+
+    rows = response.rows || [];
+    used = candidate;
+    if (namesAnything(rows)) break;
+  }
+
+  return { rows, used };
+}
+
 /** The most-visited pages in a window, ordered by views. */
 export async function fetchTopPages(resolved, limit = config.topPagesLimit) {
-  const [response] = await getClient().runReport({
-    property: property(),
-    dateRanges: [asDateRange(resolved.current)],
-    dimensions: [{ name: 'pagePath' }, { name: 'pageTitle' }],
-    metrics: [
-      { name: 'screenPageViews' },
-      { name: 'totalUsers' },
-      { name: 'userEngagementDuration' },
-    ],
-    orderBys: [{ metric: { metricName: 'screenPageViews' }, desc: true }],
-    limit,
-  });
+  const { rows, used } = await queryTopPages(
+    (request) => getClient().runReport({ property: property(), ...request }),
+    {
+      dateRange: asDateRange(resolved.current),
+      limit,
+      pinned: config.pageDimension,
+    },
+  );
 
-  return (response.rows || []).map((row) => {
+  if (used.name !== PAGE_DIMENSIONS[0].name) {
+    console.log(`[ga] pages identified by "${used.name}" — pagePath had nothing to show`);
+  }
+
+  return rows.map((row) => {
     const views = num(row.metricValues?.[0]?.value);
     const engagementSeconds = num(row.metricValues?.[2]?.value);
     return {
       path: row.dimensionValues?.[0]?.value || '(not set)',
-      title: row.dimensionValues?.[1]?.value || '',
+      title: used.title ? row.dimensionValues?.[1]?.value || '' : '',
       views,
       visitors: num(row.metricValues?.[1]?.value),
       // GA reports engagement as a total across the window; per-view is the
