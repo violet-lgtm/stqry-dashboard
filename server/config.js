@@ -77,6 +77,9 @@ export const config = {
   // pagePath first and falls back to the unified screen dimensions.
   pageDimension: (process.env.GA_PAGE_DIMENSION || '').trim() || null,
   useMockData: forceMock || !canQueryGa,
+  // A stable code the client translates, plus the English text for the server
+  // log and for any client that doesn't know the code.
+  mockReasonCode: forceMock ? 'FORCED' : !propertyId ? 'NO_PROPERTY' : 'NO_CREDENTIALS',
   mockReason: forceMock
     ? 'GA_USE_MOCK is set, so the dashboard is showing generated sample data.'
     : !propertyId

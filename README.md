@@ -87,6 +87,26 @@ you deploy it anywhere public, put access control in front of it — your host's
 password protection, an identity proxy such as Cloud Run's IAM or Cloudflare
 Access, or a reverse proxy with basic auth.
 
+## Language
+
+The dashboard opens in **Dutch**. A button in the header switches to English,
+and the choice is remembered in that browser.
+
+Switching costs no requests: everything redraws from the data already in hand.
+Numbers and dates follow the language too, so Dutch shows `54.864` and
+`18 aug 2026` where English shows `54,864` and `18 Aug 2026`.
+
+Server messages are not translated on the server. The API returns a stable
+`code` (and any values to interpolate) alongside its English text, and
+`public/i18n.js` translates the codes with everything else — so an error reads
+in the same language as the page around it, and the API stays language-neutral.
+A code a client doesn't recognise falls back to the server's English message
+rather than showing a blank.
+
+To add a language, add its dictionary to `public/i18n.js` and its Intl locale
+to `LOCALES`. `npm test` then checks the new dictionary has exactly the same
+keys and placeholders as the others.
+
 ## Refreshing and caching
 
 Results are cached on the server for 30 minutes (`CACHE_TTL_MINUTES`), and an
@@ -246,11 +266,13 @@ public/
   index.html   Page structure
   styles.css   Design tokens, light and dark
   app.js       Charts (hand-drawn SVG), tables, interaction
+  i18n.js      Dutch and English strings, locale-aware formatting
 test/
   quota.test.js           How many queries reach GA, and how often
   cache.test.js           The cache's contract
   partial-failure.test.js What survives when GA returns an error
   page-dimension.test.js  Choosing the dimension that identifies a page
+  i18n.test.js            Dictionary parity, placeholders, code translation
   helpers.js              Counting GA stand-in, and a server with a hand-driven clock
 ```
 

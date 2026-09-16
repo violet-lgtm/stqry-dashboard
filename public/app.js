@@ -10,31 +10,39 @@
  * so light/dark is settled entirely in the stylesheet.
  */
 
+import {
+  DEFAULT_LANGUAGE,
+  LANGUAGES,
+  getLanguage,
+  loadLanguage,
+  locale,
+  setLanguage,
+  t,
+  translateCode,
+} from './i18n.js';
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-const RANGE_LABELS = {
-  weekly: 'Last 7 days',
-  monthly: 'Last 30 days',
-  yearly: 'Last 12 months',
+// Labels are looked up rather than stored, so a language change is picked up
+// by the next render without any cached copies to invalidate.
+const rangeLabel = (range) => t(`range.${range}`);
+/** Sentence-case for a legend or heading; the strings are stored lower-case. */
+const comparisonLabel = (range) => {
+  const label = t(`comparison.${range}`);
+  return label.charAt(0).toUpperCase() + label.slice(1);
 };
-
-const COMPARISON_LABELS = {
-  weekly: 'Previous 7 days',
-  monthly: 'Previous 30 days',
-  yearly: 'Same period last year',
-};
-
-const KPI_TILES = [
-  { range: 'weekly', label: 'This week', sub: 'Last 7 days' },
-  { range: 'monthly', label: 'This month', sub: 'Last 30 days' },
-  { range: 'yearly', label: 'This year', sub: 'Last 12 months' },
-];
+const KPI_RANGES = ['weekly', 'monthly', 'yearly'];
 
 const state = {
   range: 'monthly',
   overview: null,
   /** Guards against an earlier response landing after a later one. */
   requestSeq: 0,
+  /**
+   * The last whole-page failure, kept so the banner can be re-translated on a
+   * language change. A total failure leaves no `overview` to re-render from.
+   */
+  failure: null,
 };
 
 /* Auto-refresh pacing. The server decides when its cache goes stale and tells
@@ -48,11 +56,21 @@ const REFRESH_JITTER_MS = 30 * 1000;
  * Formatting
  * ------------------------------------------------------------------ */
 
-const fullNumber = new Intl.NumberFormat('en-GB');
-const compactNumber = new Intl.NumberFormat('en-GB', {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-});
+/**
+ * Formatters are rebuilt when the language changes: Dutch groups thousands
+ * with a dot and dates read differently, so they can't be created once.
+ */
+let fullNumber;
+let compactNumber;
+
+export function refreshFormatters() {
+  fullNumber = new Intl.NumberFormat(locale());
+  compactNumber = new Intl.NumberFormat(locale(), {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  });
+}
+refreshFormatters();
 
 const formatFull = (n) => fullNumber.format(Math.round(n));
 const formatCompact = (n) => (Math.abs(n) < 1000 ? formatFull(n) : compactNumber.format(n));
@@ -83,17 +101,17 @@ function parseBucket(bucket) {
 function formatBucketTick(bucket) {
   const { date, granularity } = parseBucket(bucket);
   if (granularity === 'month') {
-    return date.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' });
+    return date.toLocaleDateString(locale(), { month: 'short', timeZone: 'UTC' });
   }
-  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  return date.toLocaleDateString(locale(), { day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
 function formatBucketLong(bucket) {
   const { date, granularity } = parseBucket(bucket);
   if (granularity === 'month') {
-    return date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    return date.toLocaleDateString(locale(), { month: 'long', year: 'numeric', timeZone: 'UTC' });
   }
-  return date.toLocaleDateString('en-GB', {
+  return date.toLocaleDateString(locale(), {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
@@ -105,7 +123,7 @@ function formatBucketLong(bucket) {
 function formatDayRange(window) {
   const fmt = (iso) => {
     const [y, m, d] = iso.split('-').map(Number);
-    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(locale(), {
       day: 'numeric',
       month: 'short',
       year: 'numeric',
@@ -256,13 +274,13 @@ function hideTooltip() {
  * did not load" — and gives the reason in muted text rather than a status
  * colour, since a missing number is not a bad number.
  */
-function unavailableTile({ label }, reason) {
+function unavailableTile(range, reason) {
   const card = document.createElement('div');
   card.className = 'kpi kpi-unavailable';
 
   const heading = document.createElement('div');
   heading.className = 'kpi-label';
-  heading.textContent = label;
+  heading.textContent = t(`headline.${range}`);
 
   const value = document.createElement('div');
   value.className = 'kpi-value';
@@ -270,7 +288,7 @@ function unavailableTile({ label }, reason) {
 
   const note = document.createElement('div');
   note.className = 'kpi-meta';
-  note.textContent = reason || 'Could not be loaded.';
+  note.textContent = reason || t('headline.unavailable');
 
   card.append(heading, value, note);
   return card;
@@ -280,10 +298,14 @@ function renderKpis(headline, { errors = {}, fallbackMessage = null } = {}) {
   const row = document.getElementById('kpi-row');
   row.replaceChildren();
 
-  for (const tile of KPI_TILES) {
-    const data = headline?.[tile.range] ?? null;
+  for (const range of KPI_RANGES) {
+    const data = headline?.[range] ?? null;
     if (!data) {
-      row.append(unavailableTile(tile, errors[tile.range]?.message || fallbackMessage));
+      const failure = errors[range];
+      const reason = failure
+        ? translateCode('error', failure.code, failure.params, failure.message)
+        : fallbackMessage;
+      row.append(unavailableTile(range, reason));
       continue;
     }
 
@@ -292,7 +314,7 @@ function renderKpis(headline, { errors = {}, fallbackMessage = null } = {}) {
 
     const label = document.createElement('div');
     label.className = 'kpi-label';
-    label.textContent = tile.label;
+    label.textContent = t(`headline.${range}`);
 
     const value = document.createElement('div');
     value.className = 'kpi-value';
@@ -315,8 +337,8 @@ function renderKpis(headline, { errors = {}, fallbackMessage = null } = {}) {
 
     const context = document.createElement('span');
     context.textContent = change
-      ? `vs ${COMPARISON_LABELS[tile.range].toLowerCase()}`
-      : `${tile.sub} · no comparison available`;
+      ? t('headline.versus', { period: t(`comparison.${range}`) })
+      : t('headline.noComparison', { range: rangeLabel(range) });
     meta.append(context);
 
     const window = document.createElement('div');
@@ -340,14 +362,15 @@ function renderTrend() {
   container.replaceChildren();
   if (!trend.length) return;
 
-  const comparisonLabel = COMPARISON_LABELS[meta.range];
+  const comparison = comparisonLabel(meta.range);
+  const granularity = t(`granularity.${meta.granularity}`);
 
   // Legend first: two series, so identity never rests on colour alone.
   const legend = document.createElement('ul');
   legend.className = 'legend';
   for (const item of [
-    { name: RANGE_LABELS[meta.range], color: 'var(--series-1)' },
-    { name: comparisonLabel, color: 'var(--series-context)' },
+    { name: rangeLabel(meta.range), color: 'var(--series-1)' },
+    { name: comparison, color: 'var(--series-context)' },
   ]) {
     const li = document.createElement('li');
     const key = document.createElement('span');
@@ -383,7 +406,11 @@ function renderTrend() {
     height,
     viewBox: `0 0 ${width} ${height}`,
     role: 'img',
-    'aria-label': `Visitors per ${meta.granularity} for ${RANGE_LABELS[meta.range].toLowerCase()}, compared with ${comparisonLabel.toLowerCase()}.`,
+    'aria-label': t('trend.ariaLabel', {
+      granularity,
+      range: rangeLabel(meta.range).toLowerCase(),
+      comparison: comparison.toLowerCase(),
+    }),
   });
 
   // Gridlines and y ticks — solid hairlines, one step off the surface.
@@ -512,23 +539,23 @@ function renderTrend() {
     }
 
     const rows = [
-      { name: RANGE_LABELS[meta.range], value: formatFull(point.visitors), color: 'var(--series-1)' },
+      { name: rangeLabel(meta.range), value: formatFull(point.visitors), color: 'var(--series-1)' },
     ];
     if (point.previousVisitors !== null) {
       rows.push({
-        name: comparisonLabel,
+        name: comparison,
         value: formatFull(point.previousVisitors),
         color: 'var(--series-context)',
       });
     }
-    rows.push({ name: 'page views', value: formatFull(point.pageViews) });
+    rows.push({ name: t('metric.pageViews'), value: formatFull(point.pageViews) });
 
     const rect = svg.getBoundingClientRect();
     showTooltip(
       {
         title: formatBucketLong(point.bucket),
         rows,
-        note: point.partial ? 'This period is still in progress.' : undefined,
+        note: point.partial ? t('tooltip.inProgress') : undefined,
       },
       clientX ?? rect.left + x,
       clientY ?? rect.top + yAt(point.visitors),
@@ -551,7 +578,7 @@ function renderTrend() {
     fill: 'transparent',
     tabindex: '0',
     role: 'application',
-    'aria-label': 'Visitor trend. Use the left and right arrow keys to read each point.',
+    'aria-label': t('trend.ariaKeys'),
   });
 
   overlay.addEventListener('pointermove', (event) => {
@@ -587,7 +614,7 @@ function renderPages() {
   if (!topPages.length) {
     const empty = document.createElement('p');
     empty.className = 'footnote';
-    empty.textContent = 'No page data for this period.';
+    empty.textContent = t('pages.empty');
     container.append(empty);
     return;
   }
@@ -613,7 +640,7 @@ function renderPages() {
     height,
     viewBox: `0 0 ${width} ${height}`,
     role: 'img',
-    'aria-label': `The ${topPages.length} most visited pages by page views.`,
+    'aria-label': t('pages.ariaLabel', { count: topPages.length }),
   });
 
   topPages.forEach((page, i) => {
@@ -667,7 +694,11 @@ function renderPages() {
       fill: 'transparent',
       tabindex: '0',
       role: 'button',
-      'aria-label': `${page.path}: ${formatFull(page.views)} page views, ${formatFull(page.visitors)} visitors.`,
+      'aria-label': t('pages.rowLabel', {
+        path: page.path,
+        views: formatFull(page.views),
+        visitors: formatFull(page.visitors),
+      }),
     });
 
     const tooltipFor = (clientX, clientY) => {
@@ -676,9 +707,9 @@ function renderPages() {
         {
           title: page.title ? `${page.path} · ${page.title}` : page.path,
           rows: [
-            { name: 'page views', value: formatFull(page.views), color: 'var(--series-1)' },
-            { name: 'visitors', value: formatFull(page.visitors) },
-            { name: 'avg. engagement', value: formatDuration(page.avgEngagementSeconds) },
+            { name: t('metric.pageViews'), value: formatFull(page.views), color: 'var(--series-1)' },
+            { name: t('metric.visitors'), value: formatFull(page.visitors) },
+            { name: t('metric.engagement'), value: formatDuration(page.avgEngagementSeconds) },
           ],
         },
         clientX ?? rect.left + barLeft + barWidth,
@@ -722,7 +753,7 @@ function renderCardError(containerId, message) {
   container.replaceChildren();
   const box = document.createElement('p');
   box.className = 'card-error';
-  box.textContent = message || 'This panel could not be loaded.';
+  box.textContent = message || t('panel.unavailable');
   container.append(box);
 }
 
@@ -735,14 +766,17 @@ function renderPanels() {
   if (!data) return;
   const errors = data.errors || {};
 
+  const reason = (failure) =>
+    failure ? translateCode('error', failure.code, failure.params, failure.message) : null;
+
   if (data.trend) renderTrend();
-  else renderCardError('trend-chart', errors.trend?.message);
+  else renderCardError('trend-chart', reason(errors.trend));
 
   if (data.topPages) renderPages();
-  else renderCardError('pages-chart', errors.topPages?.message);
+  else renderCardError('pages-chart', reason(errors.topPages));
 
   document.getElementById('trend-footnote').textContent = data.trend?.some((d) => d.partial)
-    ? `The final ${data.meta.granularity} is still in progress, so it reads lower than a complete one.`
+    ? t('trend.footnote', { granularity: t(`granularity.${data.meta.granularity}`) })
     : '';
 
   renderTables();
@@ -784,7 +818,7 @@ function buildTable(columns, rows) {
 function unavailableNote(message) {
   const note = document.createElement('p');
   note.className = 'card-error';
-  note.textContent = message || 'No data to show.';
+  note.textContent = message || t('table.none');
   return note;
 }
 
@@ -795,30 +829,34 @@ function renderTables() {
     trend
       ? buildTable(
           [
-            { label: meta.granularity === 'month' ? 'Month' : 'Day' },
-            { label: 'Visitors', numeric: true },
-            { label: COMPARISON_LABELS[meta.range], numeric: true },
-            { label: 'Page views', numeric: true },
+            { label: meta.granularity === 'month' ? t('table.month') : t('table.day') },
+            { label: t('table.visitors'), numeric: true },
+            { label: comparisonLabel(meta.range), numeric: true },
+            { label: t('table.pageViews'), numeric: true },
           ],
           trend.map((d) => [
-            formatBucketLong(d.bucket) + (d.partial ? ' (in progress)' : ''),
+            d.partial
+              ? t('table.inProgress', { label: formatBucketLong(d.bucket) })
+              : formatBucketLong(d.bucket),
             formatFull(d.visitors),
             d.previousVisitors === null ? '—' : formatFull(d.previousVisitors),
             formatFull(d.pageViews),
           ]),
         )
-      : unavailableNote(errors.trend?.message),
+      : unavailableNote(
+          errors.trend && translateCode('error', errors.trend.code, errors.trend.params, errors.trend.message),
+        ),
   );
 
   document.getElementById('pages-table').replaceChildren(
     topPages
       ? buildTable(
           [
-            { label: 'Page' },
-            { label: 'Title' },
-            { label: 'Page views', numeric: true },
-            { label: 'Visitors', numeric: true },
-            { label: 'Avg. engagement', numeric: true },
+            { label: t('table.page') },
+            { label: t('table.title') },
+            { label: t('table.pageViews'), numeric: true },
+            { label: t('table.visitors'), numeric: true },
+            { label: t('table.engagement'), numeric: true },
           ],
           topPages.map((p) => [
             p.path,
@@ -828,7 +866,10 @@ function renderTables() {
             formatDuration(p.avgEngagementSeconds),
           ]),
         )
-      : unavailableNote(errors.topPages?.message),
+      : unavailableNote(
+          errors.topPages &&
+            translateCode('error', errors.topPages.code, errors.topPages.params, errors.topPages.message),
+        ),
   );
 }
 
@@ -839,10 +880,10 @@ function renderTables() {
 function renderRangeControl() {
   const control = document.getElementById('range-control');
   control.replaceChildren();
-  for (const [range, label] of Object.entries(RANGE_LABELS)) {
+  for (const range of KPI_RANGES) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = label;
+    button.textContent = rangeLabel(range);
     button.setAttribute('aria-pressed', String(range === state.range));
     button.addEventListener('click', () => {
       if (state.range === range) return;
@@ -865,7 +906,7 @@ function showNotice(message, tone) {
     return;
   }
   const strong = document.createElement('strong');
-  strong.textContent = tone === 'error' ? 'Could not load data. ' : 'Sample data. ';
+  strong.textContent = tone === 'error' ? t('notice.error') : t('notice.sample');
   const text = document.createTextNode(message);
   notice.append(strong, text);
   notice.dataset.tone = tone;
@@ -880,9 +921,26 @@ function setStale(isStale) {
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch {
+    // The server is unreachable, so there is no code to translate by.
+    throw Object.assign(new Error(t('error.NETWORK')), { code: 'NETWORK', fallback: '' });
+  }
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const message = body.code
+      ? translateCode('error', body.code, body.params, body.error)
+      : body.error || t('error.UNKNOWN');
+    // Carry the code through: the text is for now, the code is for re-rendering
+    // in another language later.
+    throw Object.assign(new Error(message), {
+      code: body.code || 'UNKNOWN',
+      params: body.params,
+      fallback: body.error || '',
+    });
+  }
   return body;
 }
 
@@ -954,32 +1012,31 @@ async function loadOverview({ silent = false, revertTo = null } = {}) {
     // A range clicked mid-flight supersedes this response.
     if (seq !== state.requestSeq) return;
     state.overview = data;
+    state.failure = null;
     // Either the sample-data banner, or nothing — this also clears an error
     // notice left by a previous attempt that has now recovered.
-    showNotice(data.meta.usingMockData ? data.meta.mockReason : null, 'info');
+    showNotice(
+      data.meta.usingMockData
+        ? translateCode('mock', data.meta.mockReasonCode, {}, data.meta.mockReason)
+        : null,
+      'info',
+    );
 
     document.getElementById('range-window').textContent = formatDayRange(data.meta.current);
-    document.getElementById('trend-sub').textContent =
-      `Visitors per ${data.meta.granularity}, against ${COMPARISON_LABELS[data.meta.range].toLowerCase()}`;
-    document.getElementById('pages-sub').textContent =
-      `By page views · ${formatDayRange(data.meta.current)}`;
-    document.getElementById('page-sub').textContent = data.summary
-      ? `${formatFull(data.summary.visitors)} visitors · ${RANGE_LABELS[data.meta.range].toLowerCase()}`
-      : RANGE_LABELS[data.meta.range];
-    // `generatedAt` is when the data was fetched from Google, not when this
-    // response was served — with a cache in front, those differ.
-    const updatedAt = new Date(data.meta.generatedAt).toLocaleTimeString('en-GB', {
-      hour: '2-digit',
-      minute: '2-digit',
+    document.getElementById('trend-sub').textContent = t('trend.subtitle', {
+      granularity: t(`granularity.${data.meta.granularity}`),
+      comparison: t(`comparison.${data.meta.range}`),
     });
-    const source = data.meta.usingMockData ? 'Sample data' : 'Google Analytics 4';
-    // Only worth stating in whole minutes; a sub-minute TTL (used in tests)
-    // would otherwise print as "every 0.016666666666666666 min".
-    const ttlMinutes = data.meta.cacheTtlMinutes;
-    const cadence =
-      ttlMinutes >= 1 ? ` · refreshes every ${Math.round(ttlMinutes)} min while open` : '';
-    document.getElementById('page-foot').textContent =
-      `${source} · times in ${data.meta.timeZone} · updated ${updatedAt}${cadence}`;
+    document.getElementById('pages-sub').textContent = t('pages.subtitle', {
+      window: formatDayRange(data.meta.current),
+    });
+    document.getElementById('page-sub').textContent = data.summary
+      ? t('app.subtitle', {
+          count: formatFull(data.summary.visitors),
+          range: rangeLabel(data.meta.range).toLowerCase(),
+        })
+      : rangeLabel(data.meta.range);
+    renderFooter(data.meta);
 
     renderPanels();
     // The SVG the tooltip was describing has just been replaced.
@@ -994,6 +1051,7 @@ async function loadOverview({ silent = false, revertTo = null } = {}) {
       state.range = revertTo;
       renderRangeControl();
     }
+    state.failure = { code: error.code, params: error.params, fallback: error.fallback };
     showNotice(error.message, 'error');
     // Keep trying: a transient upstream failure shouldn't leave an open
     // dashboard frozen until someone reloads it by hand.
@@ -1014,6 +1072,8 @@ function setupTableToggles() {
   }
 }
 
+let syncThemeLabel = () => {};
+
 function setupTheme() {
   const toggle = document.getElementById('theme-toggle');
   const stored = localStorage.getItem('dashboard-theme');
@@ -1025,9 +1085,10 @@ function setupTheme() {
       window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   const sync = () => {
-    toggle.textContent = isDark() ? 'Light mode' : 'Dark mode';
+    toggle.textContent = isDark() ? t('theme.toLight') : t('theme.toDark');
     toggle.setAttribute('aria-pressed', String(isDark()));
   };
+  syncThemeLabel = sync;
 
   toggle.addEventListener('click', () => {
     const next = isDark() ? 'light' : 'dark';
@@ -1050,9 +1111,101 @@ function setupResize() {
   });
 }
 
-renderRangeControl();
+/**
+ * `generatedAt` is when the data was fetched from Google, not when this
+ * response was served — with a cache in front, those differ.
+ */
+function renderFooter(meta) {
+  const updatedAt = new Date(meta.generatedAt).toLocaleTimeString(locale(), {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  // Only worth stating in whole minutes; a sub-minute TTL (used in tests)
+  // would otherwise print as "every 0.016666666666666666 min".
+  const ttlMinutes = meta.cacheTtlMinutes;
+  document.getElementById('page-foot').textContent = t('footer.line', {
+    source: t(meta.usingMockData ? 'footer.sample' : 'footer.live'),
+    timeZone: meta.timeZone,
+    time: updatedAt,
+    cadence: ttlMinutes >= 1 ? t('footer.cadence', { minutes: Math.round(ttlMinutes) }) : '',
+  });
+}
+
+/**
+ * Apply the active language to everything on screen.
+ *
+ * Static markup is keyed with `data-i18n`; the rest is redrawn from the data
+ * already in hand, so switching language costs no requests.
+ */
+function applyLanguage() {
+  document.title = t('app.documentTitle');
+  for (const node of document.querySelectorAll('[data-i18n]')) {
+    node.textContent = t(node.dataset.i18n);
+  }
+
+  const toggle = document.getElementById('language-toggle');
+  toggle.textContent = t('language.switchTo');
+  toggle.setAttribute('aria-label', t('language.label'));
+
+  syncThemeLabel();
+  renderRangeControl();
+
+  if (state.failure) {
+    const { code, params, fallback } = state.failure;
+    showNotice(translateCode('error', code, params, fallback), 'error');
+  }
+
+  if (state.overview) {
+    // Re-render from the cached response rather than refetching.
+    const data = state.overview;
+    if (!state.failure) {
+      showNotice(
+        data.meta.usingMockData
+          ? translateCode('mock', data.meta.mockReasonCode, {}, data.meta.mockReason)
+          : null,
+        'info',
+      );
+    }
+    document.getElementById('page-sub').textContent = data.summary
+      ? t('app.subtitle', {
+          count: formatFull(data.summary.visitors),
+          range: rangeLabel(data.meta.range).toLowerCase(),
+        })
+      : rangeLabel(data.meta.range);
+    document.getElementById('trend-sub').textContent = t('trend.subtitle', {
+      granularity: t(`granularity.${data.meta.granularity}`),
+      comparison: t(`comparison.${data.meta.range}`),
+    });
+    document.getElementById('pages-sub').textContent = t('pages.subtitle', {
+      window: formatDayRange(data.meta.current),
+    });
+    document.getElementById('range-window').textContent = formatDayRange(data.meta.current);
+    renderFooter(data.meta);
+    renderPanels();
+    hideTooltip();
+  }
+
+}
+
+function setupLanguage() {
+  loadLanguage();
+  // The remembered language may not be the one the formatters were built for.
+  refreshFormatters();
+
+  document.getElementById('language-toggle').addEventListener('click', () => {
+    setLanguage(LANGUAGES.find((code) => code !== getLanguage()) || DEFAULT_LANGUAGE);
+    refreshFormatters();
+    applyLanguage();
+    // The tiles are the one part not re-rendered from cached state, so they
+    // are refetched — a cache hit on the server, not a new GA query.
+    loadHeadline();
+  });
+}
+
+setupLanguage();
 setupTableToggles();
 setupTheme();
 setupResize();
+applyLanguage();
 loadHeadline();
 loadOverview();

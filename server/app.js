@@ -126,6 +126,7 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
     if (/DECODER routines|error:1E08010C|asn1 encoding/i.test(raw)) {
       return {
         status: 500,
+        code: 'BAD_PRIVATE_KEY',
         message:
           'The service-account private key could not be read. If GA_PRIVATE_KEY is on a single line, its newlines must be written as \\n, and the value must include the BEGIN/END PRIVATE KEY lines.',
       };
@@ -135,36 +136,50 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
       case 7: // PERMISSION_DENIED
         return {
           status: 403,
+          code: 'PERMISSION_DENIED',
           message:
             'Google Analytics denied access to this property. Add the service-account email as a Viewer on the GA4 property under Admin → Property access management.',
         };
       case 16: // UNAUTHENTICATED
         return {
           status: 403,
+          code: 'UNAUTHENTICATED',
           message:
             'Google Analytics rejected the credentials. Check GA_CLIENT_EMAIL and GA_PRIVATE_KEY, and that the Google Analytics Data API is enabled for the project.',
         };
       case 5: // NOT_FOUND
         return {
           status: 404,
+          code: 'NOT_FOUND',
+          params: { propertyId: config.propertyId },
           message: `No GA4 property with ID ${config.propertyId}. Use the numeric property ID from Admin → Property details, not the "G-" measurement ID.`,
         };
       case 3: // INVALID_ARGUMENT
-        return { status: 400, message: `Google Analytics rejected the query: ${raw}` };
+        return {
+          status: 400,
+          code: 'INVALID_ARGUMENT',
+          params: { detail: raw },
+          message: `Google Analytics rejected the query: ${raw}`,
+        };
       case 8: // RESOURCE_EXHAUSTED
         return {
           status: 429,
+          code: 'RESOURCE_EXHAUSTED',
           message: 'This GA4 property has hit its Data API quota. Try again shortly.',
         };
       default:
-        return { status: 502, message: raw || 'The Google Analytics API request failed.' };
+        return {
+          status: 502,
+          code: 'UNKNOWN',
+          message: raw || 'The Google Analytics API request failed.',
+        };
     }
   }
 
   function fail(res, error) {
     console.error('[ga]', error);
-    const { status, message } = describeError(error);
-    res.status(status).json({ error: message });
+    const { status, code, params, message } = describeError(error);
+    res.status(status).json({ error: message, code, ...(params ? { params } : {}) });
   }
 
   /**
@@ -193,7 +208,10 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
     const failed = Object.entries(parts).filter(([, part]) => !part.ok);
     if (failed.length === 0) return null;
     return Object.fromEntries(
-      failed.map(([name, part]) => [name, { message: describeError(part.error).message }]),
+      failed.map(([name, part]) => {
+        const { code, params, message } = describeError(part.error);
+        return [name, { code, message, ...(params ? { params } : {}) }];
+      }),
     );
   }
 
@@ -235,7 +253,9 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
         ...describe(resolved),
         timeZone: config.timeZone,
         usingMockData: config.useMockData,
-        ...(config.useMockData ? { mockReason: config.mockReason } : {}),
+        ...(config.useMockData
+          ? { mockReason: config.mockReason, mockReasonCode: config.mockReasonCode }
+          : {}),
         ...freshness(loaded.map((part) => part.entry)),
       },
       summary: parts.summary.ok ? summarise(parts.summary.entry.value) : null,
@@ -268,7 +288,9 @@ export function createApp({ source, cache = createCache({ ttlMs: config.cacheTtl
       meta: {
         timeZone: config.timeZone,
         usingMockData: config.useMockData,
-        ...(config.useMockData ? { mockReason: config.mockReason } : {}),
+        ...(config.useMockData
+          ? { mockReason: config.mockReason, mockReasonCode: config.mockReasonCode }
+          : {}),
         ...freshness(loaded.map((part) => part.entry)),
       },
       headline: Object.fromEntries(
