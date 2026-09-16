@@ -73,6 +73,9 @@ export const config = {
   credentials,
   timeZone: process.env.GA_TIMEZONE || 'UTC',
   topPagesLimit: Number(process.env.GA_TOP_PAGES_LIMIT) || 10,
+  // Pin the dimension used to identify a page. Left unset, the query tries
+  // pagePath first and falls back to the unified screen dimensions.
+  pageDimension: (process.env.GA_PAGE_DIMENSION || '').trim() || null,
   useMockData: forceMock || !canQueryGa,
   mockReason: forceMock
     ? 'GA_USE_MOCK is set, so the dashboard is showing generated sample data.'

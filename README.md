@@ -116,6 +116,26 @@ The footer shows when the data was actually fetched from Google, which is not
 the same as when the page was served. Set `CACHE_TTL_MINUTES=0` to bypass the
 cache entirely while developing.
 
+## If "Most visited pages" shows "(not set)"
+
+`pagePath` only exists for web page views. A property carrying app or screen
+data — or events arriving without `page_location` — has no page paths at all,
+and GA answers with the literal string "(not set)" for every row rather than
+with an error.
+
+The query handles this itself: it asks for `pagePath` first, and if nothing is
+named, falls back to `unifiedScreenName` and then `unifiedScreenClass` — the
+same dimensions GA's own "Pages and screens" report uses. A dimension the
+property rejects outright is skipped too. When a fallback is used, the server
+log says which one.
+
+If you already know which dimension your property wants, pin it with
+`GA_PAGE_DIMENSION` to skip the search.
+
+Still "(not set)" on every row after that? Then GA genuinely has no page or
+screen names for the period, which is a tracking problem rather than a dashboard
+one — check GA's own Pages and screens report for the same dates.
+
 ## When Google returns an error
 
 Failures are contained to the panel that failed, and the dashboard recovers on
@@ -230,6 +250,7 @@ test/
   quota.test.js           How many queries reach GA, and how often
   cache.test.js           The cache's contract
   partial-failure.test.js What survives when GA returns an error
+  page-dimension.test.js  Choosing the dimension that identifies a page
   helpers.js              Counting GA stand-in, and a server with a hand-driven clock
 ```
 
